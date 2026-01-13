@@ -1,11 +1,12 @@
 const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
 const { initializeApp } = require("firebase/app");
-const { getFirestore, collection, addDoc, query, where, getDocs, doc, updateDoc, serverTimestamp, orderBy } = require("firebase/firestore");
+const { getFirestore, collection, addDoc, query, where, getDocs, doc, updateDoc, serverTimestamp } = require("firebase/firestore");
 
 // --- 1. CONFIGURATION ---
-const token = process.env.TELEGRAM_TOKEN || '8525418474:AAHebHUTYrpKAq0Dr4UPPehYOYAacTMuYmA';
-const ADMIN_ID = process.env.ADMIN_ID || '8207051152'; 
+// Nampidirina mivantana ny ID-nao eto mba tsy hisy diso
+const token = '8525418474:AAHebHUTYrpKAq0Dr4UPPehYOYAacTMuYmA';
+const ADMIN_ID = '8207051152'; 
 
 const firebaseConfig = {
     apiKey: "AIzaSyDPrTWmxovZdbbi0BmXr6Tn6AyrlaO0cbM",
@@ -16,13 +17,14 @@ const firebaseConfig = {
     appId: "1:837671675184:web:2cd55ef7eacac7e33554f5"
 };
 
-const app = initializeApp(firebaseConfig);
-const db = getFirestore(app);
+const firebaseApp = initializeApp(firebaseConfig);
+const db = getFirestore(firebaseApp);
 const bot = new TelegramBot(token, { polling: true });
 
-const appServer = express();
-appServer.get('/', (req, res) => res.send('Bot Asa En Ligne ACTIVE!'));
-appServer.listen(process.env.PORT || 3000);
+// Express Server (Keep-alive)
+const app = express();
+app.get('/', (req, res) => res.send('Bot is running...'));
+app.listen(process.env.PORT || 3000);
 
 // --- 2. VARIABLES & MENU ---
 const userStates = {}; 
@@ -48,7 +50,7 @@ bot.on('message', async (msg) => {
 
     if (text === '/start') {
         delete userStates[chatId];
-        return bot.sendMessage(chatId, `👋 **Salama ${msg.from.first_name}!**\nAmpiasao ny bokitra ambany hitetezana ny bot.`, mainKeyboard);
+        return bot.sendMessage(chatId, `👋 **Salama ${msg.from.first_name}!**\nAfaka mandefa asa ianao ato. Ampiasao ny bokitra ambany.`, mainKeyboard);
     }
 
     if (userStates[chatId]) {
@@ -64,7 +66,7 @@ bot.on('message', async (msg) => {
     } 
     else if (text === '📞 Admin') {
         userStates[chatId] = { step: 'WAITING_FOR_ADMIN_MSG' };
-        bot.sendMessage(chatId, "💬 Manorata ny hafatra halefa any amin'ny Admin:", { 
+        bot.sendMessage(chatId, "💬 Manorata ny hafatra tianao halefa any amin'ny Admin:", { 
             reply_markup: { keyboard: [[{text: '❌ Hanafoana'}]], resize_keyboard: true } 
         });
     }
@@ -76,7 +78,7 @@ async function handleSteps(chatId, msg) {
     const state = userStates[chatId];
     const text = msg.text;
 
-    // CHAT SYSTEM
+    // Chat amin'ny Admin
     if (state.step === 'WAITING_FOR_ADMIN_MSG' || state.step === 'ADMIN_SENDING_REPLY') {
         if (text === '❌ Hanafoana') {
             delete userStates[chatId];
@@ -84,21 +86,18 @@ async function handleSteps(chatId, msg) {
         }
         
         if (state.step === 'ADMIN_SENDING_REPLY') {
-            bot.sendMessage(state.targetId, `📩 **Valiny avy amin'ny Admin:**\n\n${text}`, {
-                reply_markup: { inline_keyboard: [[{ text: '💬 Hamaly an\'i Admin', callback_data: `replyto_${ADMIN_ID}` }]] }
-            });
-            bot.sendMessage(chatId, "✅ Nalefa ny valiny.");
+            bot.sendMessage(state.targetId, `📩 **Valiny avy amin'ny Admin:**\n\n${text}`);
         } else {
-            bot.sendMessage(ADMIN_ID, `📩 **Hafatra avy amin'i ${msg.from.first_name}**:\n\n${text}`, {
+            bot.sendMessage(ADMIN_ID, `📩 **Hafatra avy amin'i ${msg.from.first_name} (ID: ${chatId}):**\n\n${text}`, {
                 reply_markup: { inline_keyboard: [[{ text: '💬 Hamaly azy', callback_data: `replyto_${chatId}` }]] }
             });
-            bot.sendMessage(chatId, "✅ Nalefa ny hafatry ny Admin.", mainKeyboard);
         }
+        bot.sendMessage(chatId, "✅ Nalefa ny hafatra.", mainKeyboard);
         delete userStates[chatId];
         return;
     }
 
-    // JOB POSTING
+    // Hizara Asa Steps
     switch (state.step) {
         case 'ASK_DESC':
             state.description = text;
@@ -121,19 +120,21 @@ async function handleSteps(chatId, msg) {
             if (!msg.photo) return bot.sendMessage(chatId, "⚠️ Sary azafady.");
             state.proofTrans = msg.photo[msg.photo.length - 1].file_id;
             state.step = 'ASK_PUBLIC_MEDIA';
-            bot.sendMessage(chatId, "📂 **Dingana 5/5 (Public)**\nAlefaso ny sary/video/vocal ho hitan'ny olona: ");
+            bot.sendMessage(chatId, "📂 **Dingana 5/5 (Ho hita public)**\nAlefaso ny sary/video/vocal ho an'ny rehetra: ");
             break;
         case 'ASK_PUBLIC_MEDIA':
             const fileId = msg.photo ? msg.photo[msg.photo.length - 1].file_id : 
                            (msg.video ? msg.video.file_id : 
                            (msg.voice ? msg.voice.file_id : 
                            (msg.document ? msg.document.file_id : null)));
+            
             if (!fileId) return bot.sendMessage(chatId, "⚠️ Fichier azafady.");
             
             state.publicMedia = fileId;
             state.mediaType = msg.photo ? 'photo' : (msg.video ? 'video' : (msg.voice ? 'voice' : 'doc'));
 
             try {
+                // Tehirizina ho pending
                 const docRef = await addDoc(collection(db, "jobs"), {
                     userId: chatId,
                     name: msg.from.first_name,
@@ -143,49 +144,45 @@ async function handleSteps(chatId, msg) {
                     proofTrans: state.proofTrans,
                     publicMedia: state.publicMedia,
                     mediaType: state.mediaType,
-                    status: 'pending', // MIANDRY ADMIN
+                    status: 'pending',
                     createdAt: serverTimestamp()
                 });
-                sendReviewToAdmin(docRef.id, state, msg.from);
+                
+                // ALEFA ANY AMIN'NY ADMIN
+                await sendReviewToAdmin(docRef.id, state, msg.from);
                 bot.sendMessage(chatId, "✅ Voaray! Miandrasa fankatoavana avy amin'ny Admin.", mainKeyboard);
-            } catch (e) { console.error("Database Error:", e); }
+            } catch (e) {
+                console.error(e);
+                bot.sendMessage(chatId, "⚠️ Olana tamin'ny famonjena azy.");
+            }
             delete userStates[chatId];
             break;
     }
 }
 
-// --- 5. ADMIN CALLBACKS (APPROVE/REJECT) ---
+// --- 5. ADMIN CALLBACKS ---
 
 bot.on('callback_query', async (query) => {
     const data = query.data;
-    const adminChatId = query.message.chat.id;
-
     if (data.startsWith('approve_') || data.startsWith('reject_')) {
         const [action, docId, targetId] = data.split('_');
         const jobRef = doc(db, "jobs", docId);
-
         try {
             if (action === 'approve') {
-                // MIASA ETO: Ovaina ho 'approved' ilay status
                 await updateDoc(jobRef, { status: "approved" });
                 bot.sendMessage(targetId, "✅ **Neken'ny Admin ny asanao!** Efa hita public izao.");
-                bot.sendMessage(adminChatId, "✅ Asa nekena.");
             } else {
                 await updateDoc(jobRef, { status: "rejected" });
                 bot.sendMessage(targetId, "❌ **Nolavin'ny Admin ny asanao.**");
-                bot.sendMessage(adminChatId, "❌ Asa nolavina.");
             }
-            bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: adminChatId, message_id: query.message.message_id });
-        } catch (e) {
-            console.error("Update error:", e);
-            bot.sendMessage(adminChatId, "⚠️ Error tamin'ny fanekena.");
-        }
+            bot.deleteMessage(query.message.chat.id, query.message.message_id);
+            bot.sendMessage(ADMIN_ID, `Asa ${action === 'approve' ? 'nekena' : 'nolavina'}.`);
+        } catch (e) { console.error(e); }
     }
-
     if (data.startsWith('replyto_')) {
         const targetId = data.split('_')[1];
-        userStates[adminChatId] = { step: 'ADMIN_SENDING_REPLY', targetId: targetId };
-        bot.sendMessage(adminChatId, `Mandrefasa valiny ho an'i ${targetId}:`);
+        userStates[ADMIN_ID] = { step: 'ADMIN_SENDING_REPLY', targetId: targetId };
+        bot.sendMessage(ADMIN_ID, `Manorata valiny ho an'i ${targetId}:`);
     }
     bot.answerCallbackQuery(query.id);
 });
@@ -193,49 +190,40 @@ bot.on('callback_query', async (query) => {
 // --- 6. HELPERS ---
 
 async function sendReviewToAdmin(docId, data, user) {
-    await bot.sendPhoto(ADMIN_ID, data.proofSite, { caption: `🖼️ **PROOF 1 (Site)**\nAvy amin'i: ${user.first_name}` });
-    await bot.sendPhoto(ADMIN_ID, data.proofTrans, { caption: `🖼️ **PROOF 2 (Portefeuille)**\nDesc: ${data.description}` });
-    
-    bot.sendMessage(ADMIN_ID, `🆕 **ASA VAOVAO**\n🔗 Link: ${data.link}`, {
-        reply_markup: {
-            inline_keyboard: [[
-                { text: '✅ Manaiky', callback_data: `approve_${docId}_${user.id}` },
-                { text: '❌ Mandà', callback_data: `reject_${docId}_${user.id}` }
-            ]]
-        }
-    });
+    try {
+        // 1. Alefa ny sary proofs aloha
+        await bot.sendPhoto(ADMIN_ID, data.proofSite, { caption: `🖼️ **PROOF 1: SITE**\nAvy amin'i: ${user.first_name}` });
+        await bot.sendPhoto(ADMIN_ID, data.proofTrans, { caption: `🖼️ **PROOF 2: TRANSACTION**\nDescription: ${data.description}` });
+        
+        // 2. Alefa ny bokitra fanekena
+        await bot.sendMessage(ADMIN_ID, `🆕 **ASA VAOVAO HOHAMARININA**\n🔗 Lien: ${data.link}`, {
+            reply_markup: {
+                inline_keyboard: [[
+                    { text: '✅ Manaiky', callback_data: `approve_${docId}_${user.id}` },
+                    { text: '❌ Mandà', callback_data: `reject_${docId}_${user.id}` }
+                ]]
+            }
+        });
+    } catch (err) {
+        console.error("Tsy lasa any amin'ny Admin ny hafatra:", err);
+        // Raha misy fahadisoana dia andramana hafatra tsotra
+        bot.sendMessage(ADMIN_ID, `⚠️ Misy nanandrana nandefa asa nefa nisy fahadisoana tamin'ny sary.\nID: ${docId}`);
+    }
 }
 
 async function handleShowJobs(chatId) {
     try {
-        const jobsRef = collection(db, "jobs");
-        // MAZAVA: Ny 'status' dia tsy maintsy 'approved'
-        const q = query(jobsRef, where("status", "==", "approved"));
+        const q = query(collection(db, "jobs"), where("status", "==", "approved"));
         const snap = await getDocs(q);
+        if (snap.empty) return bot.sendMessage(chatId, "📭 Mbola tsy misy asa approved.");
 
-        if (snap.empty) {
-            return bot.sendMessage(chatId, "📭 Mbola tsy misy asa neken'ny Admin (approved) aloha izao.", mainKeyboard);
-        }
-
-        bot.sendMessage(chatId, "✨ **IRETO NY ASA AZO ALAFY:**");
-
-        snap.forEach((doc) => {
+        snap.forEach(doc => {
             const job = doc.data();
-            const caption = `
-━━━━━━━━━━━━━━━━━━
-💼 **ASA: ${job.description.toUpperCase()}**
-━━━━━━━━━━━━━━━━━━
-✅ *Verified by Admin*
-📅 *Daty:* ${new Date().toLocaleDateString('fr-FR')}
-
-👇 **Tsindrio ny bokitra ambany raha hanao ny asa:**`;
-
+            const caption = `━━━━━━━━━━━━━━━━━━\n💼 **ASA: ${job.description.toUpperCase()}**\n━━━━━━━━━━━━━━━━━━\n✅ *Verified by Admin*\n\n👇 **Tsindrio ny bokitra:**`;
             const opts = {
                 caption: caption,
                 parse_mode: 'Markdown',
-                reply_markup: {
-                    inline_keyboard: [[{ text: '🌐 HANDRAY NY ASA (LINK)', url: job.link }]]
-                }
+                reply_markup: { inline_keyboard: [[{ text: '🌐 HANDRAY NY ASA', url: job.link }]] }
             };
 
             if (job.mediaType === 'photo') bot.sendPhoto(chatId, job.publicMedia, opts);
@@ -243,8 +231,5 @@ async function handleShowJobs(chatId) {
             else if (job.mediaType === 'voice') bot.sendVoice(chatId, job.publicMedia, opts);
             else bot.sendMessage(chatId, caption, opts);
         });
-    } catch (e) {
-        console.error("Fetch error:", e);
-        bot.sendMessage(chatId, "⚠️ Misy olana teknika.");
-    }
+    } catch (e) { console.error(e); }
 }
