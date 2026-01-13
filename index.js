@@ -1,12 +1,11 @@
 const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
 const { initializeApp } = require("firebase/app");
-const { getFirestore, collection, addDoc, query, where, getDocs, doc, updateDoc, serverTimestamp } = require("firebase/firestore");
+const { getFirestore, collection, addDoc, query, where, getDocs, doc, updateDoc, serverTimestamp, orderBy } = require("firebase/firestore");
 
 // --- 1. CONFIGURATION ---
-// Nampidirina mivantana ny ID-nao eto mba tsy hisy diso
 const token = '8525418474:AAHebHUTYrpKAq0Dr4UPPehYOYAacTMuYmA';
-const ADMIN_ID = '8207051152'; 
+const ADMIN_ID = 8207051152; // OVAINA HO NOMBRE (tsisy guillemets)
 
 const firebaseConfig = {
     apiKey: "AIzaSyDPrTWmxovZdbbi0BmXr6Tn6AyrlaO0cbM",
@@ -33,7 +32,7 @@ const mainKeyboard = {
     reply_markup: {
         keyboard: [
             [{ text: '🔍 Hijery Asa' }, { text: '📝 Hizara Asa' }],
-            [{ text: '🔄 Actualiser' }, { text: '📞 Admin' }]
+            [{ text: '🔄 Actualiser' }, { text: '📞 Admin' }, { text: '📊 Ny asa nataoko' }]
         ],
         resize_keyboard: true
     },
@@ -69,6 +68,9 @@ bot.on('message', async (msg) => {
         bot.sendMessage(chatId, "💬 Manorata ny hafatra tianao halefa any amin'ny Admin:", { 
             reply_markup: { keyboard: [[{text: '❌ Hanafoana'}]], resize_keyboard: true } 
         });
+    }
+    else if (text === '📊 Ny asa nataoko') {
+        handleMyJobs(chatId);
     }
 });
 
@@ -134,7 +136,6 @@ async function handleSteps(chatId, msg) {
             state.mediaType = msg.photo ? 'photo' : (msg.video ? 'video' : (msg.voice ? 'voice' : 'doc'));
 
             try {
-                // Tehirizina ho pending
                 const docRef = await addDoc(collection(db, "jobs"), {
                     userId: chatId,
                     name: msg.from.first_name,
@@ -148,7 +149,6 @@ async function handleSteps(chatId, msg) {
                     createdAt: serverTimestamp()
                 });
                 
-                // ALEFA ANY AMIN'NY ADMIN
                 await sendReviewToAdmin(docRef.id, state, msg.from);
                 bot.sendMessage(chatId, "✅ Voaray! Miandrasa fankatoavana avy amin'ny Admin.", mainKeyboard);
             } catch (e) {
@@ -191,11 +191,9 @@ bot.on('callback_query', async (query) => {
 
 async function sendReviewToAdmin(docId, data, user) {
     try {
-        // 1. Alefa ny sary proofs aloha
         await bot.sendPhoto(ADMIN_ID, data.proofSite, { caption: `🖼️ **PROOF 1: SITE**\nAvy amin'i: ${user.first_name}` });
         await bot.sendPhoto(ADMIN_ID, data.proofTrans, { caption: `🖼️ **PROOF 2: TRANSACTION**\nDescription: ${data.description}` });
         
-        // 2. Alefa ny bokitra fanekena
         await bot.sendMessage(ADMIN_ID, `🆕 **ASA VAOVAO HOHAMARININA**\n🔗 Lien: ${data.link}`, {
             reply_markup: {
                 inline_keyboard: [[
@@ -206,7 +204,6 @@ async function sendReviewToAdmin(docId, data, user) {
         });
     } catch (err) {
         console.error("Tsy lasa any amin'ny Admin ny hafatra:", err);
-        // Raha misy fahadisoana dia andramana hafatra tsotra
         bot.sendMessage(ADMIN_ID, `⚠️ Misy nanandrana nandefa asa nefa nisy fahadisoana tamin'ny sary.\nID: ${docId}`);
     }
 }
@@ -232,4 +229,56 @@ async function handleShowJobs(chatId) {
             else bot.sendMessage(chatId, caption, opts);
         });
     } catch (e) { console.error(e); }
+}
+
+// --- 7. NOUVELLE FONCTIONNALITÉ: HISTORIQUE DES ASA ---
+
+async function handleMyJobs(chatId) {
+    try {
+        const q = query(collection(db, "jobs"), where("userId", "==", chatId));
+        const snap = await getDocs(q);
+        
+        if (snap.empty) {
+            return bot.sendMessage(chatId, "📭 Mbola tsy nandefa asa ianao.");
+        }
+
+        let jobs = [];
+        snap.forEach(doc => {
+            const job = doc.data();
+            job.id = doc.id;
+            jobs.push(job);
+        });
+
+        // Trier par date décroissante
+        jobs.sort((a, b) => {
+            const dateA = a.createdAt ? a.createdAt.toDate() : new Date(0);
+            const dateB = b.createdAt ? b.createdAt.toDate() : new Date(0);
+            return dateB - dateA;
+        });
+
+        let message = "📊 **Ny asa nataonao:**\n\n";
+        jobs.forEach((job, index) => {
+            const date = job.createdAt ? job.createdAt.toDate() : new Date();
+            const formattedDate = date.toLocaleDateString('mg-MG', { 
+                year: 'numeric', 
+                month: 'long', 
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+            
+            let statusEmoji = '⏳';
+            if (job.status === 'approved') statusEmoji = '✅';
+            else if (job.status === 'rejected') statusEmoji = '❌';
+            
+            message += `${index+1}. **${job.description}**\n`;
+            message += `   ⏰ ${formattedDate}\n`;
+            message += `   Statut: ${statusEmoji} ${job.status}\n\n`;
+        });
+
+        bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+    } catch (e) {
+        console.error(e);
+        bot.sendMessage(chatId, "⚠️ Misy olana nitranga.");
+    }
 }
