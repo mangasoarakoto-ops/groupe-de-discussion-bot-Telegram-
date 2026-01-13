@@ -1,7 +1,7 @@
 const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
 const { initializeApp } = require("firebase/app");
-const { getFirestore, collection, addDoc, query, where, orderBy, limit, getDocs, doc, updateDoc } = require("firebase/firestore");
+const { getFirestore, collection, addDoc, query, where, getDocs, doc, updateDoc } = require("firebase/firestore");
 
 // --- 1. CONFIGURATION ---
 const token = process.env.TELEGRAM_TOKEN || '8525418474:AAHebHUTYrpKAq0Dr4UPPehYOYAacTMuYmA';
@@ -18,42 +18,43 @@ const firebaseConfig = {
   measurementId: "G-72CKQLX75V"
 };
 
-// Initialize
+// Initialize App
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 const bot = new TelegramBot(token, { polling: true });
 
-// --- 2. SERVER EXPRESS ---
+// --- 2. SERVER EXPRESS (Mba hijanona ho velona ny bot) ---
 const appServer = express();
 const port = process.env.PORT || 3000;
 appServer.get('/', (req, res) => res.send('Bot Asa En Ligne ACTIVE!'));
 appServer.listen(port, () => console.log(`Server running on port ${port}`));
 
-// --- 3. VARIABLES TEMPORAIRES ---
+// --- 3. VARIABLES & MENU ---
 const userStates = {}; 
 
-// --- 4. CLAVIER FIXE (Persistent Menu) ---
-// Ity ilay fonction mametraka ny bokitra eo ambany
+// Ity ilay Bokitra Fixe (Clavier maharitra)
 const mainKeyboard = {
     reply_markup: {
         keyboard: [
             [{ text: '🔍 Hijery Asa' }, { text: '📝 Hizara Asa' }],
             [{ text: '🔄 Actualiser' }, { text: '📞 Admin' }]
         ],
-        resize_keyboard: true, // Mba tsy ho lehibe loatra ny bokitra
-        persistent: true       // Mipetraka foana (tsy mi-caché)
+        resize_keyboard: true // Mba tsy ho lehibe loatra
     },
     parse_mode: 'Markdown'
 };
 
-// --- 5. LOGIQUE MESSAGE (Boutons + Flow) ---
+// --- 4. LOGIQUE PRINCIPALE ---
 
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const text = msg.text;
     const name = msg.from.first_name;
 
-    // A. RAHA MANORATRA /start
+    // Tsy mandray message raha tsy Private (fiarovana kely)
+    if (msg.chat.type !== 'private') return;
+
+    // A. MENU START
     if (text === '/start') {
         const welcomeText = `
 👋 **Salama ${name}!**
@@ -65,36 +66,54 @@ Ampiasao ireo bokitra eo ambany ireo mba hitetezana ny Bot.
         return;
     }
 
-    // B. RAHA EO AM-PANORATANA ASA (Flow Publication)
+    // B. FLOW FAMETRAHANA ASA (Raha ao anaty dingana ilay olona)
     if (userStates[chatId]) {
         handleJobPostingSteps(chatId, msg);
         return;
     }
 
-    // C. GESTION DES BOUTONS DU MENU (TEXTE)
-    
-    // --- 1. HIJERY ASA & ACTUALISER ---
+    // C. GESTION DES BOUTONS (Menu Fixe)
+
+    // --- 1. HIJERY ASA & ACTUALISER (Correction Index) ---
     if (text === '🔍 Hijery Asa' || text === '🔄 Actualiser') {
         bot.sendMessage(chatId, "⏳ **Maka ny lisitry ny asa...**");
         
         try {
             const jobsRef = collection(db, "jobs");
-            // NOTE: Raha misy erreur "Index", jereo ny console log
-            const q = query(jobsRef, where("status", "==", "approved"), orderBy("timestamp", "desc"), limit(5));
+            
+            // FANOVANA LEHIBE: Nesorina ny 'orderBy' mba tsy hila Index
+            // Maka ny asa rehetra izay 'approved'
+            const q = query(jobsRef, where("status", "==", "approved"));
             const querySnapshot = await getDocs(q);
 
             if (querySnapshot.empty) {
                 bot.sendMessage(chatId, "📭 **Mbola tsy misy asa disponible amin'izao.**\nAndramo Actualiser afaka kelikely.", mainKeyboard);
             } else {
+                // Eto isika manao ny 'Tri' (Filaharana) amin'ny alalan'ny Javascript
+                let jobsList = [];
+                querySnapshot.forEach((doc) => {
+                    jobsList.push(doc.data());
+                });
+
+                // Mandahatra: Ny daty vaovao indrindra no atao ambony
+                jobsList.sort((a, b) => {
+                    // Fiarovana raha tsy misy timestamp
+                    const timeA = a.timestamp ? a.timestamp.seconds : 0;
+                    const timeB = b.timestamp ? b.timestamp.seconds : 0;
+                    return timeB - timeA;
+                });
+
+                // Maka ny 5 voalohany fotsiny
+                const recentJobs = jobsList.slice(0, 5);
+
                 bot.sendMessage(chatId, "👇 **Ireto ny asa vao haingana:**", mainKeyboard);
                 
-                querySnapshot.forEach((doc) => {
-                    const job = doc.data();
+                recentJobs.forEach((job) => {
                     const jobText = `
 💼 **${job.description}**
 
 🔗 **Lien:** ${job.link}
-📅 **Daty:** ${new Date(job.timestamp.seconds * 1000).toLocaleDateString('fr-FR')}
+📅 **Daty:** ${job.timestamp ? new Date(job.timestamp.seconds * 1000).toLocaleDateString('fr-FR') : 'Vao haingana'}
 
 ✅ *Verified by Admin*
                     `;
@@ -103,30 +122,24 @@ Ampiasao ireo bokitra eo ambany ireo mba hitetezana ny Bot.
             }
         } catch (error) {
             console.error("Error fetching jobs:", error);
-            // Matetika raha 'FAILED_PRECONDITION', mila index ao amin'ny Firebase console
-            if (error.code === 'failed-precondition') {
-                console.log("⚠️ MILA INDEX: Jereo ny lien ao amin'ny error log etsy ambony hamoronana azy.");
-            }
-            bot.sendMessage(chatId, "⚠️ **Nisy olana tamin'ny connexion.** \n(Mety mila verificatin ny Admin ny Database na ny Index).", mainKeyboard);
+            bot.sendMessage(chatId, "⚠️ **Mbola misy olana kely.**\nAndramo rehefa avy eo.", mainKeyboard);
         }
     }
 
     // --- 2. HIZARA ASA ---
     else if (text === '📝 Hizara Asa') {
         userStates[chatId] = { step: 'ASK_DESC' };
-        // Esorina kely ny clavier mba hifantoka amin'ny fanoratana, na avela eo (safidy).
-        // Eto dia avelantsika eo fa alefa ny hafatra :
-        bot.sendMessage(chatId, "📝 **Dingana 1/3**\n\nAlefaso ny **DESCRIPTION** ny asa (Manorata mazava):", { reply_markup: { remove_keyboard: true } }); 
-        // Nesoriko kely ny clavier eto mba tsy hanelingelina ny saisie, hiverina izy rehefa vita.
+        // Esorina vonjimaika ny clavier mba hifantohany
+        bot.sendMessage(chatId, "📝 **Dingana 1/3**\n\nAlefaso ny **DESCRIPTION** ny asa (Manorata mazava):", { reply_markup: { remove_keyboard: true } });
     }
 
-    // --- 3. ADMIN ---
+    // --- 3. ADMIN CONTACT ---
     else if (text === '📞 Admin') {
         bot.sendMessage(chatId, "💬 Raha misy fanontaniana na olana dia manorata mivantana any amin'ny: @H_G_M_1", mainKeyboard);
     }
 });
 
-// --- 6. FLOW DÉTAILLÉ (POSTING) ---
+// --- 5. FUNCTION POSTING (Dingana Fizarana Asa) ---
 
 async function handleJobPostingSteps(chatId, msg) {
     const text = msg.text;
@@ -162,9 +175,10 @@ async function handleJobPostingSteps(chatId, msg) {
         if (!state.proofs) state.proofs = [];
         state.proofs.push(photoId);
 
+        // Timer mba ahafahana mandefa sary maromaro (3 segondra)
         if (!state.timer) {
             state.timer = setTimeout(async () => {
-                bot.sendMessage(chatId, "✅ **Voaray ny asanao!**\nAlefa any amin'ny Admin mba ho hamarinina.", mainKeyboard); // Averina ny Clavier eto
+                bot.sendMessage(chatId, "✅ **Voaray ny asanao!**\nAlefa any amin'ny Admin mba ho hamarinina.", mainKeyboard); // Mamerina ny Clavier
                 
                 try {
                     const docRef = await addDoc(collection(db, "jobs"), {
@@ -186,21 +200,19 @@ async function handleJobPostingSteps(chatId, msg) {
     }
 }
 
-// --- 7. ADMIN ACTIONS (CALLBACK QUERY) ---
-// Mbola ilaina ity ho an'ny Admin manaiky na mandà asa (Inside chat button)
+// --- 6. ADMIN CALLBACKS (Approve/Reject) ---
 
 bot.on('callback_query', async (query) => {
     const data = query.data;
     
-    // Admin Actions (Approve/Reject)
+    // Check raha Admin
+    if (query.from.id.toString() !== ADMIN_ID.toString()) return;
+
     if (data.startsWith('approve_') || data.startsWith('reject_')) {
         const parts = data.split('_'); // [action, docId, userId]
         const type = parts[0];
         const docId = parts[1];
         const targetUserId = parts[2];
-
-        // Security Check
-        if (query.from.id.toString() !== ADMIN_ID.toString()) return;
 
         try {
             const jobRef = doc(db, "jobs", docId);
@@ -214,9 +226,11 @@ bot.on('callback_query', async (query) => {
                 bot.sendMessage(targetUserId, "❌ **Nolavina.** Tsy neken'ny Admin ny asanao.");
                 bot.sendMessage(ADMIN_ID, "❌ Job Rejeté.");
             }
-            // Delete boutons admin
+            
+            // Fafana ny boutons
             bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: ADMIN_ID, message_id: query.message.message_id });
             bot.answerCallbackQuery(query.id);
+            
         } catch (e) {
             console.log(e);
             bot.sendMessage(ADMIN_ID, "⚠️ Error DB update.");
