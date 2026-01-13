@@ -1,14 +1,14 @@
 const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
 const { initializeApp } = require("firebase/app");
-const { getFirestore, collection, addDoc, getDoc, doc, updateDoc } = require("firebase/firestore");
+const { getFirestore, collection, addDoc } = require("firebase/firestore");
 
-// --- CONFIGURATION ---
-// Soloinao eto ny Token-nao sy ny Admin ID
+// --- 1. CONFIGURATION ---
+// Token sy Admin ID
 const token = process.env.TELEGRAM_TOKEN || '8382264998:AAFtVA9PZcEIPdubBI-XrPFRqP3kc16diWA';
-const ADMIN_ID = process.env.ADMIN_ID || '8296442213';
+const ADMIN_ID = process.env.ADMIN_ID || '8296442213'; 
 
-// Firebase Config (Ilay nomenao)
+// Firebase Config
 const firebaseConfig = {
   apiKey: "AIzaSyDPrTWmxovZdbbi0BmXr6Tn6AyrlaO0cbM",
   authDomain: "bot-asa-en-ligne-mada.firebaseapp.com",
@@ -27,283 +27,295 @@ const db = getFirestore(app);
 // Initialize Bot
 const bot = new TelegramBot(token, { polling: true });
 
-// State management (Mitehirizy ny étape misy ilay olona)
-const userStates = {}; 
-
-// --- SERVER EXPRESS (Mba tsy hatory ny bot amin'ny Render) ---
+// --- 2. SERVER EXPRESS (Mba tsy hatory ny Bot ao amin'ny Render) ---
 const appServer = express();
 const port = process.env.PORT || 3000;
-appServer.get('/', (req, res) => res.send('Bot Asa En Ligne Mada is running!'));
+appServer.get('/', (req, res) => res.send('Bot Asa En Ligne Mada is ACTIVE!'));
 appServer.listen(port, () => console.log(`Server running on port ${port}`));
 
 
-// --- 1. WELCOME MESSAGE & GROUP LOGIC ---
+// --- 3. VARIABLES & STORAGE ---
+const userStates = {}; // Mitahiry ny étape misy ny user
+const jobCache = {};   // Mitahiry ny asa miandry validation admin
+let GROUP_ID = null;   // Ho tadidin'ny bot eto ny ID an'ny groupe-nao
+
+// --- 4. GESTION GROUPE & WELCOME ---
 
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
-    const userId = msg.from.id;
+    const type = msg.chat.type;
     const text = msg.text;
 
-    // A. Miarahaba olona vaovao miditra
-    if (msg.new_chat_members) {
-        msg.new_chat_members.forEach((member) => {
-            if (!member.is_bot) {
-                const welcomeMsg = `
-👋 Miarahaba anao ${member.first_name} tonga ato amin'ny **Asa En Ligne Mada**!
+    // A. Raha ao anaty GROUPE ny message
+    if (type === 'group' || type === 'supergroup') {
+        // Tehirizo ny Group ID mba hahafahana mandefa publication any aoriana
+        GROUP_ID = chatId;
 
-Ity groupe ity dia natao hifampizarana asa matotra sy azo antoka.
+        // 1. Miarahaba Membres Vaovao (Welcome + Bouton Publier)
+        if (msg.new_chat_members) {
+            msg.new_chat_members.forEach((member) => {
+                if (!member.is_bot) {
+                    const welcomeMsg = `
+👋 **Miarahaba anao ${member.first_name} tonga ato amin'ny Asa En Ligne Mada!**
 
-🤖 **Ny Bot-nay dia manolotra fampianarana momba ny:**
+Ity groupe ity dia ifampizarana asa matotra. Ny Bot-nay dia manolotra:
+✅ Microtache
+✅ Trading bot & Crypto
+✅ Poppo live (Lahy/Vavy)
+✅ Investissement Long Terme
+
+⚠️ **FEPETRA:** Raha hizara asa ianao dia tsy maintsy mandefa PREUVE DE PAIEMENT.
+
+👇 **Tsindrio ny bokotra eto ambany raha hizara asa:**
+                    `;
+                    
+                    // Bokitra mitondra mankany amin'ny Private Chat (Deep Linking)
+                    const opts = {
+                        parse_mode: 'Markdown',
+                        reply_markup: {
+                            inline_keyboard: [
+                                [{ text: '📢 Publier un travail (Mila Preuve)', url: `https://t.me/AsaEnLigneMG_bot?start=publier` }]
+                            ]
+                        }
+                    };
+                    bot.sendMessage(chatId, welcomeMsg, opts);
+                }
+            });
+        }
+
+        // 2. Anti-Scam (Mammafa raha > 4% par jour)
+        if (text) {
+            const scamRegex = /(\d+)\s*%\s*(par jour|daily|par day|journalier)/i;
+            const match = text.match(scamRegex);
+            
+            if (match) {
+                const percentage = parseFloat(match[1]);
+                if (percentage > 4) {
+                    bot.deleteMessage(chatId, msg.message_id).catch(e => console.log(e));
+                    bot.sendMessage(chatId, `⚠️ **FAMPITANDREMANA:** Voafafa ny publication satria mihoatra ny 4% isan'andro ny tombony (Risk Scam).`);
+                }
+            }
+        }
+    }
+});
+
+
+// --- 5. PRIVATE CHAT & JOB POSTING FLOW ---
+
+// Mandray ny /start (na tsotra na avy amin'ny groupe)
+bot.onText(/\/start(?: (.+))?/, (msg, match) => {
+    const chatId = msg.chat.id;
+    const param = match[1]; // 'publier' raha avy amin'ny groupe
+
+    // Raha tsy 'publier' no parametre, dia manao Présentation tsotra
+    if (!param) {
+        const text = `
+🤖 **Bot Asa En Ligne Mada**
+
+Manampy anao izahay amin'ny:
 ➡️ Microtache
 ➡️ Trading bot
-➡️ Poppo live (Lahy/Vavy)
+➡️ Poppo live
 ➡️ Investissement Long Terme
 ➡️ Cryptomonnaie
 
-🔗 **Raha liana ianao, midira eto:**
-https://t.me/AsaEnLigneMG_bot
-
-💡 **Te hizara asa?**
-Mila porofo (Preuve de retrait) ianao vao afaka mizara. Tsindrio ny bokotra eto ambany.
-                `;
-                
-                const opts = {
-                    parse_mode: 'Markdown',
-                    reply_markup: {
-                        inline_keyboard: [
-                            [{ text: '📢 Publier un travail', url: `https://t.me/AsaEnLigneMG_bot?start=publier` }]
-                        ]
-                    }
-                };
-                bot.sendMessage(chatId, welcomeMsg, opts);
+👇 **Misafidiana:**
+        `;
+        const opts = {
+            parse_mode: 'Markdown',
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: '📝 Hametraka Asa (Publier)', callback_data: 'start_publier' }]
+                ]
             }
-        });
+        };
+        bot.sendMessage(chatId, text, opts);
+        return;
     }
 
-    // B. Mammafa publication raha > 4% par jour (Anti-Scam)
-    if (text) {
-        // Regex mijery isa arahina % sy teny hoe "jour" na "daily"
-        const scamRegex = /(\d+)\s*%\s*(par jour|daily|par day)/i;
-        const match = text.match(scamRegex);
-        
-        if (match) {
-            const percentage = parseFloat(match[1]);
-            if (percentage > 4) {
-                bot.deleteMessage(chatId, msg.message_id).catch(e => console.log(e));
-                bot.sendMessage(chatId, `⚠️ **FAMPITANDREMANA:** Voafafa ny publication an'i ${msg.from.first_name} satria mihoatra ny 4% isan'andro ny tombony (Risk Scam).`);
-            }
-        }
-    }
-});
-
-
-// --- 2. JOB POSTING FLOW (Ao amin'ny Private Chat) ---
-
-// Manomboka ny procedure
-bot.onText(/\/start (.+)/, (msg, match) => {
-    const chatId = msg.chat.id;
-    const param = match[1];
-
+    // Raha 'publier' (avy amin'ny groupe na bokitra)
     if (param === 'publier') {
-        userStates[chatId] = { step: 'ASK_DESC' };
-        bot.sendMessage(chatId, "📝 Alefaso ny **Description** an'ilay asa tianao zaraina:");
+        startJobPosting(chatId);
     }
 });
 
-// Gestion des réponses (Text & Images)
+// Callback ho an'ny bokitra Start
+bot.on('callback_query', (query) => {
+    const chatId = query.message.chat.id;
+    if (query.data === 'start_publier') {
+        bot.answerCallbackQuery(query.id);
+        startJobPosting(chatId);
+    }
+});
+
+// -- LOGIQUE POSTING --
+
+function startJobPosting(chatId) {
+    userStates[chatId] = { step: 'ASK_DESC' };
+    bot.sendMessage(chatId, "📝 **Dingana 1/3**\n\nAlefaso ny **DESCRIPTION** feno an'ilay asa (sorato daholo izay tianao holazaina):");
+}
+
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const text = msg.text;
-    
-    // Raha tsy ao anaty process dia ignore
-    if (!userStates[chatId]) return;
 
-    const currentState = userStates[chatId];
+    // Raha tsy ao anaty process posting dia miala
+    if (!userStates[chatId] || msg.chat.type !== 'private') return;
 
-    // STEP 1: Description
-    if (currentState.step === 'ASK_DESC' && text) {
-        currentState.description = text;
-        currentState.step = 'ASK_LINK';
-        bot.sendMessage(chatId, "🔗 Alefaso ny **Lien d'inscription** (Mba ho lasa bokotra 'S'inscrire'):");
+    const state = userStates[chatId];
+
+    // STEP 1: Description -> Link
+    if (state.step === 'ASK_DESC' && text && !text.startsWith('/')) {
+        state.description = text;
+        state.step = 'ASK_LINK';
+        bot.sendMessage(chatId, "🔗 **Dingana 2/3**\n\nAlefaso ny **LIEN D'INSCRIPTION** (Mila manomboka amin'ny http:// na https://):");
         return;
     }
 
-    // STEP 2: Lien
-    if (currentState.step === 'ASK_LINK' && text) {
-        // Check raha URL marina (tsotsotra)
+    // STEP 2: Link -> Proof
+    if (state.step === 'ASK_LINK' && text) {
         if (!text.startsWith('http')) {
-            bot.sendMessage(chatId, "⚠️ Mila manomboka amin'ny http:// na https:// ny lien. Avereno azafady.");
+            bot.sendMessage(chatId, "⚠️ Diso ny lien. Mila manomboka amin'ny http:// na https://. Avereno azafady.");
             return;
         }
-        currentState.link = text;
-        currentState.step = 'ASK_PROOF_SITE';
-        bot.sendMessage(chatId, "📸 Alefaso ny sary 1: **Historique de transaction ao amin'ny SITE**:");
+        state.link = text;
+        state.step = 'ASK_PROOFS';
+        bot.sendMessage(chatId, "📸 **Dingana 3/3 (Farany)**\n\nAlefaso ny sary porofo (Preuve de retrait). \n\n⚠️ **Alefaso sary roa:**\n1. Historique ao amin'ny Site\n2. Reçu ao amin'ny Mobile Money na Wallet.\n\n(Alefaso miaraka na tsirairay, rehefa vita dia miandrasa kely).");
         return;
     }
 
-    // STEP 3: Preuve Site (Image)
-    if (currentState.step === 'ASK_PROOF_SITE' && msg.photo) {
-        currentState.proof1 = msg.photo[msg.photo.length - 1].file_id; // Raisina ny sary quality tsara indrindra
-        currentState.step = 'ASK_PROOF_WALLET';
-        bot.sendMessage(chatId, "📸 Alefaso ny sary 2: **Historique de transaction ao amin'ny PORTEFEUILLE** (Mvola/Binance/etc):");
-        return;
-    }
-
-    // STEP 4: Preuve Wallet (Image) + FIN
-    if (currentState.step === 'ASK_PROOF_WALLET' && msg.photo) {
-        currentState.proof2 = msg.photo[msg.photo.length - 1].file_id;
+    // STEP 3: Proofs (Images)
+    if (state.step === 'ASK_PROOFS' && msg.photo) {
+        // Raisina ny sary
+        const photoId = msg.photo[msg.photo.length - 1].file_id;
         
-        // Save to Firebase (Optional - fa tsara ho an'ny archives)
-        try {
-            await addDoc(collection(db, "jobs"), {
-                userId: msg.from.id,
-                username: msg.from.username || msg.from.first_name,
-                description: currentState.description,
-                link: currentState.link,
-                status: 'pending',
-                timestamp: new Date()
-            });
-        } catch (e) {
-            console.error("Error adding to DB", e);
+        if (!state.proofs) state.proofs = [];
+        state.proofs.push(photoId);
+
+        // Raha vao sary iray no voaray dia ilazana handefa ny faharoa, na raha efa roa dia alefa
+        if (state.proofs.length < 2) {
+             bot.sendMessage(chatId, "👍 Voaray ny sary voalohany. Alefaso ny faharoa.");
+        } else {
+            // Efa feno ny sary 2
+            bot.sendMessage(chatId, "✅ **Tafiditra ny asanao!**\nAlefa any amin'ny Admin izany izao mba ho hamarinina. Ho hitanao ao amin'ny groupe rehefa voaray.");
+            
+            // Save to DB
+            try {
+                await addDoc(collection(db, "jobs"), {
+                    userId: msg.from.id,
+                    username: msg.from.username || "Inconnu",
+                    description: state.description,
+                    link: state.link,
+                    status: 'pending',
+                    timestamp: new Date()
+                });
+            } catch (e) { console.error("DB Error", e); }
+
+            // Send to Admin
+            sendToAdmin(chatId, state, msg.from);
+            
+            // Clear state
+            delete userStates[chatId];
         }
-
-        bot.sendMessage(chatId, "✅ Voarainay ny asanao. Mbola **En attente de validation** any amin'ny Admin io. Ho hitanao ao amin'ny groupe rehefa voamarina.");
-
-        // Alefa any amin'ny Admin
-        sendToAdminForApproval(chatId, currentState, msg.from);
-        
-        // Reset state
-        delete userStates[chatId];
     }
 });
 
 
-// --- 3. ADMIN MANAGEMENT ---
+// --- 6. ADMIN MANAGEMENT ---
 
-async function sendToAdminForApproval(userChatId, jobData, userInfo) {
+async function sendToAdmin(userId, jobData, userInfo) {
     const caption = `
-🆕 **DEMANDE DE PUBLICATION**
+🆕 **VALIDATION REQUIRED**
 👤 User: ${userInfo.first_name} (@${userInfo.username})
-ID: ${userChatId}
+🆔 UserID: ${userId}
 
 📝 **Description:**
 ${jobData.description}
 
 🔗 **Lien:** ${jobData.link}
-
-👇 Jereo ny sary porofo roa ambany 👇
     `;
 
-    // Mandefa ny sary sy ny details any amin'ny Admin
-    await bot.sendMediaGroup(ADMIN_ID, [
-        { type: 'photo', media: jobData.proof1, caption: caption }, // Caption only on first item
-        { type: 'photo', media: jobData.proof2 }
-    ]);
+    // 1. Mandefa ny sary any amin'ny admin (Album)
+    const media = jobData.proofs.map((fileId, index) => ({
+        type: 'photo',
+        media: fileId,
+        caption: index === 0 ? caption : '' // Caption amin'ny sary voalohany ihany
+    }));
 
-    // Mandefa bokotra Action ho an'ny Admin
+    await bot.sendMediaGroup(ADMIN_ID, media);
+
+    // 2. Mandefa ny bouton Action (Misaraka satria MediaGroup tsy manaiky bouton)
+    // Tehirizina ao amin'ny cache ilay asa
+    jobCache[userId] = jobData;
+
     const opts = {
         reply_markup: {
             inline_keyboard: [
                 [
-                    { text: '✅ Valider (Publier)', callback_data: `approve_${userChatId}` },
-                    { text: '❌ Refuser', callback_data: `reject_${userChatId}` }
+                    { text: '✅ Valider (Publier)', callback_data: `approve_${userId}` },
+                    { text: '❌ Refuser', callback_data: `reject_${userId}` }
                 ],
                 [
-                    { text: '📩 Manoratra hafatra (DM)', callback_data: `msg_${userChatId}` }
+                    { text: '📩 Message User', callback_data: `msg_${userId}` }
                 ]
             ]
         }
     };
-    // Tsy maintsy atao hafatra mitokana ny bouton satria mediaGroup tsy manaiky bouton
-    // Mila tehirizina any ho any ny data mba ho azo ampiasaina rehefa mikitika ny admin.
-    // Eto dia mampiasa memory cache tsotra isika (jobCache).
-    jobCache[userChatId] = jobData;
-    bot.sendMessage(ADMIN_ID, `Action ho an'ny post-n'i ${userInfo.first_name}:`, opts);
+    bot.sendMessage(ADMIN_ID, `Hetsika ho an'ny asan'i ${userInfo.first_name}:`, opts);
 }
 
-const jobCache = {}; // Cache temporaire ho an'ny admin actions
-
-// Admin Actions Handler
-bot.on('callback_query', async (callbackQuery) => {
-    const action = callbackQuery.data;
-    const msg = callbackQuery.message;
+// Admin Actions
+bot.on('callback_query', async (query) => {
+    const action = query.data;
+    const msg = query.message;
     const adminChatId = msg.chat.id;
 
     if (adminChatId.toString() !== ADMIN_ID.toString()) return;
 
+    // APPROVE
     if (action.startsWith('approve_')) {
-        const targetUserId = action.split('_')[1];
-        const jobData = jobCache[targetUserId];
+        const targetId = action.split('_')[1];
+        const job = jobCache[targetId];
 
-        if (jobData) {
-            // 1. Alefa any amin'ny Groupe
-            // Mila ID an'ny groupe ianao eto. Atao hoe "GROUP_ID" na manao env var.
-            // Azonao atao koa ny manao forward na manamboatra post vaovao.
-            
-            // Raha te hahalala ny Group ID dia asio console.log(msg.chat.id) ao amin'ny group handler.
-            // Eto dia hipost ao amin'ny group
-            // Mila fantatra ny ID-n'ny groupe. Matetika manomboka amin'ny -100...
-            // Ohatra: const GROUP_ID = '-100xxxxxxxx'; 
-            
-            // Ho an'ny demo, dia alefako miverina any amin'ny admin ho fanehoana, fa soloy GROUP ID io.
-            // Mba hahazoana ny ID Groupe: Ampidiro ao amin'ny groupe ny bot dia manorata zavatra dia jereo ny logs.
-            
-            const postCaption = `
-💼 **ASA VAOVAO REEHETRA!** 💼
+        if (job) {
+            // Alefa any amin'ny User
+            bot.sendMessage(targetId, "✅ **Faly miarahaba!** Neken'ny Admin ny asanao ary efa navoaka ao amin'ny Groupe.");
 
-${jobData.description}
+            // Alefa any amin'ny GROUPE (Raha efa nianatra ny ID ny bot)
+            if (GROUP_ID) {
+                const groupCaption = `
+💼 **ASA VAOVAO REEHETRA!** ${job.description}
 
 ✅ **Preuve de paiement:** Verified by Admin
-            `;
-
-            const postOpts = {
-                parse_mode: 'Markdown',
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: '🚀 S\'inscrire eto', url: jobData.link }]
-                    ]
-                }
-            };
-            
-            // ETO: Soloy ny ID-ny groupe ny 'adminChatId' rehefa tena izy
-             // bot.sendPhoto(GROUP_ID, jobData.proof2, postOpts); 
-             // Satria tianao hisy sary porofo:
-             await bot.sendPhoto(adminChatId, jobData.proof2, postOpts); // Test mode (Admin mahita)
-            
-             // Filazana amin'ny Admin
-             bot.answerCallbackQuery(callbackQuery.id, { text: 'Nalefa tany amin\'ny groupe!' });
-             bot.sendMessage(adminChatId, "✅ Nalefa tany amin'ny groupe ilay izy.");
-
-             // Filazana amin'ny User
-             bot.sendMessage(targetUserId, "✅ Arahabaina! Neken'ny Admin ny publication-nao ary efa hita ao amin'ny groupe.");
-             
-             delete jobCache[targetUserId];
+👇 Midira eto:
+                `;
+                
+                const groupOpts = {
+                    caption: groupCaption,
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: '🚀 S\'inscrire amin\'ny Site', url: job.link }]
+                        ]
+                    }
+                };
+                
+                // Mandefa ny sary iray (Preuve) + Texte + Bouton ao amin'ny groupe
+                await bot.sendPhoto(GROUP_ID, job.proofs[0], groupOpts);
+                bot.sendMessage(ADMIN_ID, "✅ Voa-publié soa aman-tsara tao amin'ny Groupe.");
+            } else {
+                bot.sendMessage(ADMIN_ID, "⚠️ **Tsy mbola fantatro ny ID an'ny Groupe.**\nAlefaso any amin'ny groupe aloha aho dia manorata zavatra kely, dia andramo validerina indray.");
+            }
+            delete jobCache[targetId];
         } else {
-            bot.sendMessage(adminChatId, "⚠️ Tsy hita intsony ny data (mety efa restart ny server).");
+            bot.sendMessage(ADMIN_ID, "⚠️ Expired data.");
         }
     }
 
+    // REJECT
     if (action.startsWith('reject_')) {
-        const targetUserId = action.split('_')[1];
-        bot.sendMessage(targetUserId, "❌ Miala tsiny, nolavin'ny Admin ny publication-nao. Hamarino ny porofo na ny description.");
-        bot.answerCallbackQuery(callbackQuery.id, { text: 'Refusé.' });
-        delete jobCache[targetUserId];
-    }
-
-    if (action.startsWith('msg_')) {
-        const targetUserId = action.split('_')[1];
-        userStates[ADMIN_ID] = { step: 'ADMIN_DM', target: targetUserId };
-        bot.sendMessage(ADMIN_ID, "✍️ Manorata ny hafatra halefa any amin'io olona io:");
-        bot.answerCallbackQuery(callbackQuery.id);
-    }
-});
-
-// Admin DM Handler
-bot.on('message', (msg) => {
-    if (msg.chat.id.toString() === ADMIN_ID.toString() && userStates[ADMIN_ID]?.step === 'ADMIN_DM') {
-        const targetUser = userStates[ADMIN_ID].target;
-        bot.sendMessage(targetUser, `📩 **Message avy amin'ny Admin:**\n\n${msg.text}`);
-        bot.sendMessage(ADMIN_ID, "✅ Lasa ny hafatra.");
-        delete userStates[ADMIN_ID];
+        const targetId = action.split('_')[1];
+        bot.sendMessage(targetId, "❌ **Nolavina.** Ny asanao dia tsy neken'ny Admin. Mety tsy ampy ny porofo na tsy mazava ny fanazavana.");
+        bot.answerCallbackQuery(query.id, { text: 'Nolavina.' });
+        delete jobCache[targetId];
     }
 });
