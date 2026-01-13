@@ -1,259 +1,220 @@
 const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
 const { initializeApp } = require("firebase/app");
-const { getFirestore, collection, addDoc, query, where, getDocs, doc, updateDoc } = require("firebase/firestore");
+const { getFirestore, collection, addDoc, query, where, getDocs, doc, updateDoc, serverTimestamp } = require("firebase/firestore");
 
 // --- 1. CONFIGURATION ---
 const token = process.env.TELEGRAM_TOKEN || '8525418474:AAHebHUTYrpKAq0Dr4UPPehYOYAacTMuYmA';
 const ADMIN_ID = process.env.ADMIN_ID || '8207051152'; 
 
 const firebaseConfig = {
-  apiKey: "AIzaSyDPrTWmxovZdbbi0BmXr6Tn6AyrlaO0cbM",
-  authDomain: "bot-asa-en-ligne-mada.firebaseapp.com",
-  databaseURL: "https://bot-asa-en-ligne-mada-default-rtdb.firebaseio.com",
-  projectId: "bot-asa-en-ligne-mada",
-  storageBucket: "bot-asa-en-ligne-mada.firebasestorage.app",
-  messagingSenderId: "837671675184",
-  appId: "1:837671675184:web:2cd55ef7eacac7e33554f5",
-  measurementId: "G-72CKQLX75V"
+    apiKey: "AIzaSyDPrTWmxovZdbbi0BmXr6Tn6AyrlaO0cbM",
+    authDomain: "bot-asa-en-ligne-mada.firebaseapp.com",
+    projectId: "bot-asa-en-ligne-mada",
+    storageBucket: "bot-asa-en-ligne-mada.firebasestorage.app",
+    messagingSenderId: "837671675184",
+    appId: "1:837671675184:web:2cd55ef7eacac7e33554f5"
 };
 
-// Initialize App
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 const bot = new TelegramBot(token, { polling: true });
 
-// --- 2. SERVER EXPRESS (Mba hijanona ho velona ny bot) ---
+// --- 2. SERVER EXPRESS ---
 const appServer = express();
-const port = process.env.PORT || 3000;
-appServer.get('/', (req, res) => res.send('Bot Asa En Ligne ACTIVE!'));
-appServer.listen(port, () => console.log(`Server running on port ${port}`));
+appServer.get('/', (req, res) => res.send('Bot ACTIVE!'));
+appServer.listen(process.env.PORT || 3000);
 
-// --- 3. VARIABLES & MENU ---
 const userStates = {}; 
 
-// Ity ilay Bokitra Fixe (Clavier maharitra)
 const mainKeyboard = {
     reply_markup: {
         keyboard: [
             [{ text: '🔍 Hijery Asa' }, { text: '📝 Hizara Asa' }],
             [{ text: '🔄 Actualiser' }, { text: '📞 Admin' }]
         ],
-        resize_keyboard: true // Mba tsy ho lehibe loatra
+        resize_keyboard: true
     },
     parse_mode: 'Markdown'
 };
 
-// --- 4. LOGIQUE PRINCIPALE ---
+// --- 3. LOGIQUE PRINCIPALE ---
 
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const text = msg.text;
-    const name = msg.from.first_name;
 
-    // Tsy mandray message raha tsy Private (fiarovana kely)
     if (msg.chat.type !== 'private') return;
 
-    // A. MENU START
     if (text === '/start') {
-        const welcomeText = `
-👋 **Salama ${name}!**
-
-Tongasoa ato amin'ny **Asa En Ligne Mada**.
-Ampiasao ireo bokitra eo ambany ireo mba hitetezana ny Bot.
-        `;
-        bot.sendMessage(chatId, welcomeText, mainKeyboard);
-        return;
+        delete userStates[chatId];
+        return bot.sendMessage(chatId, `👋 **Salama ${msg.from.first_name}!**\nAfaka mandefa sary, video, audio, pdf, na **vocal** ianao izao rehefa mizara asa.`, mainKeyboard);
     }
 
-    // B. FLOW FAMETRAHANA ASA (Raha ao anaty dingana ilay olona)
     if (userStates[chatId]) {
-        handleJobPostingSteps(chatId, msg);
-        return;
+        return handleAllSteps(chatId, msg);
     }
 
-    // C. GESTION DES BOUTONS (Menu Fixe)
-
-    // --- 1. HIJERY ASA & ACTUALISER (Correction Index) ---
     if (text === '🔍 Hijery Asa' || text === '🔄 Actualiser') {
-        bot.sendMessage(chatId, "⏳ **Maka ny lisitry ny asa...**");
-        
-        try {
-            const jobsRef = collection(db, "jobs");
-            
-            // FANOVANA LEHIBE: Nesorina ny 'orderBy' mba tsy hila Index
-            // Maka ny asa rehetra izay 'approved'
-            const q = query(jobsRef, where("status", "==", "approved"));
-            const querySnapshot = await getDocs(q);
-
-            if (querySnapshot.empty) {
-                bot.sendMessage(chatId, "📭 **Mbola tsy misy asa disponible amin'izao.**\nAndramo Actualiser afaka kelikely.", mainKeyboard);
-            } else {
-                // Eto isika manao ny 'Tri' (Filaharana) amin'ny alalan'ny Javascript
-                let jobsList = [];
-                querySnapshot.forEach((doc) => {
-                    jobsList.push(doc.data());
-                });
-
-                // Mandahatra: Ny daty vaovao indrindra no atao ambony
-                jobsList.sort((a, b) => {
-                    // Fiarovana raha tsy misy timestamp
-                    const timeA = a.timestamp ? a.timestamp.seconds : 0;
-                    const timeB = b.timestamp ? b.timestamp.seconds : 0;
-                    return timeB - timeA;
-                });
-
-                // Maka ny 5 voalohany fotsiny
-                const recentJobs = jobsList.slice(0, 5);
-
-                bot.sendMessage(chatId, "👇 **Ireto ny asa vao haingana:**", mainKeyboard);
-                
-                recentJobs.forEach((job) => {
-                    const jobText = `
-💼 **${job.description}**
-
-🔗 **Lien:** ${job.link}
-📅 **Daty:** ${job.timestamp ? new Date(job.timestamp.seconds * 1000).toLocaleDateString('fr-FR') : 'Vao haingana'}
-
-✅ *Verified by Admin*
-                    `;
-                    bot.sendMessage(chatId, jobText, { disable_web_page_preview: true });
-                });
-            }
-        } catch (error) {
-            console.error("Error fetching jobs:", error);
-            bot.sendMessage(chatId, "⚠️ **Mbola misy olana kely.**\nAndramo rehefa avy eo.", mainKeyboard);
-        }
-    }
-
-    // --- 2. HIZARA ASA ---
+        handleShowJobs(chatId);
+    } 
     else if (text === '📝 Hizara Asa') {
         userStates[chatId] = { step: 'ASK_DESC' };
-        // Esorina vonjimaika ny clavier mba hifantohany
-        bot.sendMessage(chatId, "📝 **Dingana 1/3**\n\nAlefaso ny **DESCRIPTION** ny asa (Manorata mazava):", { reply_markup: { remove_keyboard: true } });
-    }
-
-    // --- 3. ADMIN CONTACT ---
+        bot.sendMessage(chatId, "📝 **Dingana 1/5**\nAlefaso ny **DESCRIPTION** ny asa:", { reply_markup: { remove_keyboard: true } });
+    } 
     else if (text === '📞 Admin') {
-        bot.sendMessage(chatId, "💬 Raha misy fanontaniana na olana dia manorata mivantana any amin'ny: @H_G_M_1", mainKeyboard);
+        userStates[chatId] = { step: 'WAITING_FOR_ADMIN_MSG' };
+        bot.sendMessage(chatId, "💬 Manorata ny hafatra tianao halefa any amin'ny Admin:", { reply_markup: { keyboard: [[{text: '❌ Hanafoana'}]], resize_keyboard: true } });
     }
 });
 
-// --- 5. FUNCTION POSTING (Dingana Fizarana Asa) ---
+// --- 4. FUNCTION HITANTANA NY DINGANA (Nampiana Vocal) ---
 
-async function handleJobPostingSteps(chatId, msg) {
-    const text = msg.text;
+async function handleAllSteps(chatId, msg) {
     const state = userStates[chatId];
+    const text = msg.text;
 
-    // STEP 1: Description
-    if (state.step === 'ASK_DESC' && text) {
-        if (text.toLowerCase().includes("300%") || text.toLowerCase().includes("500%")) {
-             bot.sendMessage(chatId, "⚠️ **Tsy ekena:** Ahiana ho Scam. Avereno azafady.");
-             return;
+    // CHAT ADMIN
+    if (state.step === 'WAITING_FOR_ADMIN_MSG') {
+        if (text === '❌ Hanafoana') {
+            delete userStates[chatId];
+            return bot.sendMessage(chatId, "Nofononina ny fandefasana hafatra.", mainKeyboard);
         }
-        state.description = text;
-        state.step = 'ASK_LINK';
-        bot.sendMessage(chatId, "🔗 **Dingana 2/3**\n\nAlefaso ny **LIEN D'INSCRIPTION** (manomboka amin'ny http...):");
+        bot.sendMessage(ADMIN_ID, `📩 **Hafatra avy amin'i ${msg.from.first_name}** (ID: \`${chatId}\`):\n\n${text}`, {
+            parse_mode: 'Markdown',
+            reply_markup: { inline_keyboard: [[{ text: '💬 Hamaly azy', callback_data: `replyto_${chatId}` }]] }
+        });
+        bot.sendMessage(chatId, "✅ Nalefa ny hafatry ny Admin.", mainKeyboard);
+        delete userStates[chatId];
         return;
     }
 
-    // STEP 2: Link
-    if (state.step === 'ASK_LINK' && text) {
-        if (!text.startsWith('http')) {
-            bot.sendMessage(chatId, "⚠️ Diso ny lien. Mila manomboka amin'ny http:// na https://.");
-            return;
-        }
-        state.link = text;
-        state.step = 'ASK_PROOFS';
-        bot.sendMessage(chatId, "📸 **Dingana 3/3**\n\nAlefaso ny sary POROFO (Preuve de retrait/paiement). \n*Alefaso sary 1 na 2.*");
-        return;
-    }
+    // JOB POSTING
+    switch (state.step) {
+        case 'ASK_DESC':
+            state.description = text;
+            state.step = 'ASK_LINK';
+            bot.sendMessage(chatId, "🔗 **Dingana 2/5**\nAlefaso ny **LIEN D'INSCRIPTION**:");
+            break;
 
-    // STEP 3: Proofs (Images)
-    if (state.step === 'ASK_PROOFS' && msg.photo) {
-        const photoId = msg.photo[msg.photo.length - 1].file_id;
-        if (!state.proofs) state.proofs = [];
-        state.proofs.push(photoId);
+        case 'ASK_LINK':
+            if (!text || !text.startsWith('http')) return bot.sendMessage(chatId, "⚠️ Diso ny lien. Avereno:");
+            state.link = text;
+            state.step = 'ASK_PROOF_SITE';
+            bot.sendMessage(chatId, "📸 **Dingana 3/5 (Admin ihany)**\nAlefaso sary misy **Historique amin'ilay Site**: ");
+            break;
 
-        // Timer mba ahafahana mandefa sary maromaro (3 segondra)
-        if (!state.timer) {
-            state.timer = setTimeout(async () => {
-                bot.sendMessage(chatId, "✅ **Voaray ny asanao!**\nAlefa any amin'ny Admin mba ho hamarinina.", mainKeyboard); // Mamerina ny Clavier
-                
-                try {
-                    const docRef = await addDoc(collection(db, "jobs"), {
-                        userId: msg.from.id,
-                        username: msg.from.username || "Inconnu",
-                        description: state.description,
-                        link: state.link,
-                        status: 'pending',
-                        proofs: state.proofs,
-                        timestamp: new Date()
-                    });
-                    
-                    sendToAdmin(chatId, state, msg.from, docRef.id);
-                } catch (e) { console.error("DB Error", e); }
-                
-                delete userStates[chatId];
-            }, 3000);
-        }
+        case 'ASK_PROOF_SITE':
+            if (!msg.photo) return bot.sendMessage(chatId, "⚠️ Mila sary azafady.");
+            state.proofSite = msg.photo[msg.photo.length - 1].file_id;
+            state.step = 'ASK_PROOF_TRANS';
+            bot.sendMessage(chatId, "📸 **Dingana 4/5 (Admin ihany)**\nAlefaso sary misy **Historique Transaction**:");
+            break;
+
+        case 'ASK_PROOF_TRANS':
+            if (!msg.photo) return bot.sendMessage(chatId, "⚠️ Mila sary azafady.");
+            state.proofTrans = msg.photo[msg.photo.length - 1].file_id;
+            state.step = 'ASK_PUBLIC_MEDIA';
+            bot.sendMessage(chatId, "📁 **Dingana 5/5 (Public)**\nAlefaso ny sary, video, audio, vocal na PDF: ");
+            break;
+
+        case 'ASK_PUBLIC_MEDIA':
+            // Eto no nampiana ny 'voice'
+            const fileId = msg.photo ? msg.photo[msg.photo.length - 1].file_id : 
+                           (msg.video ? msg.video.file_id : 
+                           (msg.audio ? msg.audio.file_id : 
+                           (msg.voice ? msg.voice.file_id : // <-- Vocal
+                           (msg.document ? msg.document.file_id : null))));
+
+            if (!fileId) return bot.sendMessage(chatId, "⚠️ Alefaso fichier (Sary/Video/Vocal/PDF) azafady.");
+            
+            state.publicMedia = fileId;
+            state.mediaType = msg.photo ? 'photo' : (msg.video ? 'video' : (msg.audio ? 'audio' : (msg.voice ? 'voice' : 'doc')));
+
+            bot.sendMessage(chatId, "✅ **Voaray!** Miandrasa ny fankatoavan'ny Admin.", mainKeyboard);
+            
+            try {
+                const docRef = await addDoc(collection(db, "jobs"), {
+                    userId: chatId,
+                    name: msg.from.first_name,
+                    description: state.description,
+                    link: state.link,
+                    proofSite: state.proofSite,
+                    proofTrans: state.proofTrans,
+                    publicMedia: state.publicMedia,
+                    mediaType: state.mediaType,
+                    status: 'pending',
+                    timestamp: serverTimestamp()
+                });
+                sendJobToAdmin(docRef.id, state, msg.from);
+            } catch (e) { console.log(e); }
+            delete userStates[chatId];
+            break;
     }
 }
 
-// --- 6. ADMIN CALLBACKS (Approve/Reject) ---
+// --- 5. ADMIN HANDLERS ---
 
 bot.on('callback_query', async (query) => {
     const data = query.data;
-    
-    // Check raha Admin
-    if (query.from.id.toString() !== ADMIN_ID.toString()) return;
+    const adminChatId = query.message.chat.id;
+
+    if (data.startsWith('replyto_')) {
+        const targetId = data.split('_')[1];
+        userStates[adminChatId] = { step: 'ADMIN_SENDING_REPLY', targetId: targetId };
+        bot.sendMessage(adminChatId, `Manorata ny valiny ho an'i User \`${targetId}\`:`, { parse_mode: 'Markdown' });
+    }
 
     if (data.startsWith('approve_') || data.startsWith('reject_')) {
-        const parts = data.split('_'); // [action, docId, userId]
-        const type = parts[0];
-        const docId = parts[1];
-        const targetUserId = parts[2];
-
-        try {
-            const jobRef = doc(db, "jobs", docId);
-            
-            if (type === 'approve') {
-                await updateDoc(jobRef, { status: "approved" });
-                bot.sendMessage(targetUserId, "✅ **Faly miarahaba!** Neken'ny Admin ny asanao. Efa hita ao amin'ny lisitra izany izao.");
-                bot.sendMessage(ADMIN_ID, "✅ Job Approuvé.");
-            } else {
-                await updateDoc(jobRef, { status: "rejected" });
-                bot.sendMessage(targetUserId, "❌ **Nolavina.** Tsy neken'ny Admin ny asanao.");
-                bot.sendMessage(ADMIN_ID, "❌ Job Rejeté.");
-            }
-            
-            // Fafana ny boutons
-            bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: ADMIN_ID, message_id: query.message.message_id });
-            bot.answerCallbackQuery(query.id);
-            
-        } catch (e) {
-            console.log(e);
-            bot.sendMessage(ADMIN_ID, "⚠️ Error DB update.");
+        const [action, docId, targetId] = data.split('_');
+        const jobRef = doc(db, "jobs", docId);
+        if (action === 'approve') {
+            await updateDoc(jobRef, { status: 'approved' });
+            bot.sendMessage(targetId, "✅ Neken'ny Admin ny asanao!");
+        } else {
+            await updateDoc(jobRef, { status: 'rejected' });
+            bot.sendMessage(targetId, "❌ Nolavin'ny Admin ny asanao.");
         }
+        bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: adminChatId, message_id: query.message.message_id });
     }
 });
 
-async function sendToAdmin(userId, jobData, userInfo, docId) {
-    const caption = `🆕 **ASA VAOVAO**\n👤 User: ${userInfo.first_name}\n📝 Desc: ${jobData.description}\n🔗 Lien: ${jobData.link}`;
-    const opts = {
-        reply_markup: {
-            inline_keyboard: [
-                [
-                    { text: '✅ Manaiky', callback_data: `approve_${docId}_${userId}` },
-                    { text: '❌ Mandà', callback_data: `reject_${docId}_${userId}` }
-                ]
-            ]
-        }
-    };
-
-    if (jobData.proofs.length > 0) {
-        await bot.sendPhoto(ADMIN_ID, jobData.proofs[0], { caption: caption, reply_markup: opts.reply_markup });
-    } else {
-        await bot.sendMessage(ADMIN_ID, caption, opts);
+bot.on('message', (msg) => {
+    const chatId = msg.chat.id;
+    if (userStates[chatId]?.step === 'ADMIN_SENDING_REPLY') {
+        const targetId = userStates[chatId].targetId;
+        bot.sendMessage(targetId, `📩 **Valiny avy amin'ny Admin:**\n\n${msg.text}`, {
+            reply_markup: { inline_keyboard: [[{ text: '💬 Valiana indray', callback_data: `replyto_${ADMIN_ID}` }]] }
+        });
+        bot.sendMessage(chatId, "✅ Nalefa ny valiny.");
+        delete userStates[chatId];
     }
+});
+
+// --- 6. HELPERS (Nampiana Fomba fandefasana Vocal) ---
+
+async function sendJobToAdmin(docId, data, user) {
+    await bot.sendPhoto(ADMIN_ID, data.proofSite, { caption: "🖼️ Proof 1: Site" });
+    await bot.sendPhoto(ADMIN_ID, data.proofTrans, { caption: "🖼️ Proof 2: Transaction" });
+    bot.sendMessage(ADMIN_ID, `🆕 **ASA VAOVAO**\n👤 ${user.first_name}\n📝 ${data.description}`, {
+        reply_markup: { inline_keyboard: [[{ text: '✅ Manaiky', callback_data: `approve_${docId}_${user.id}` }, { text: '❌ Mandà', callback_data: `reject_${docId}_${user.id}` }]] }
+    });
+}
+
+async function handleShowJobs(chatId) {
+    const q = query(collection(db, "jobs"), where("status", "==", "approved"));
+    const snap = await getDocs(q);
+    if (snap.empty) return bot.sendMessage(chatId, "📭 Tsy misy asa.");
+
+    snap.forEach(doc => {
+        const job = doc.data();
+        const info = `💼 **${job.description}**\n🔗 [Hiditra amin'ny asa](${job.link})`;
+        const opts = { caption: info, parse_mode: 'Markdown' };
+
+        if (job.mediaType === 'photo') bot.sendPhoto(chatId, job.publicMedia, opts);
+        else if (job.mediaType === 'video') bot.sendVideo(chatId, job.publicMedia, opts);
+        else if (job.mediaType === 'audio') bot.sendAudio(chatId, job.publicMedia, opts);
+        else if (job.mediaType === 'voice') bot.sendVoice(chatId, job.publicMedia, opts); // <-- Fandefasana vocal
+        else if (job.mediaType === 'doc') bot.sendDocument(chatId, job.publicMedia, opts);
+    });
 }
